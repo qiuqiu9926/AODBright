@@ -35,9 +35,12 @@
 #import <dispatch/dispatch.h>
 #import <unistd.h>
 #import <fcntl.h>
+#import <stdlib.h>
 #import <string.h>
 #import <stdarg.h>
 #import <limits.h>
+#import <pthread.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 // ---------------------------------------------------------------------------
 // 参数
@@ -51,6 +54,64 @@ static const long long kOurSource   = 0x414F4442LL;  // 'AODB'，标记我们自
 // ---------------------------------------------------------------------------
 static int gLogCount = 0;
 
+// 日志落点。顺序即优先级。
+//   /var/jb/aodbright_logs/  —— 由 postinst 以 root 建好（0777）并预建文件（0666），
+//                                这是本机唯一被证明写得进去的地方（见 AODDim v0.3.5 注释）
+//   后三条是历史候选路径，AODDim 实测全被 SpringBoard 的沙箱拦掉，留作兜底并记录 access 结果
+static const char *kLogPaths[] = {
+    "/var/jb/aodbright_logs/aodbright.log",
+    "/var/jb/aodbright.log",
+    "/var/mobile/Library/Preferences/aodbright.log",
+    "/tmp/aodbright.log",
+    NULL
+};
+
+// 纯 C 面包屑：不碰任何 ObjC。
+// 它跑到了 => dylib 被 dyld 加载且构造函数执行了。与「ObjC 是否可用」严格分开。
+static void rawBreadcrumb(const char *what) {
+    size_t n = strlen(what);
+    for (int i = 0; kLogPaths[i]; i++) {
+        int fd = open(kLogPaths[i], O_WRONLY | O_CREAT | O_APPEND, 0666);
+        if (fd < 0) continue;
+        if (write(fd, what, n) >= 0) write(fd, "\n", 1);
+        close(fd);
+    }
+}
+
+// 通道 B：CFPreferences 面包屑。
+// 走 cfprefsd 落盘，真正写文件的是 cfprefsd，不受本进程沙箱限制 ——
+// 这是所有越狱插件存偏好的方式，也是绕开前面那个沙箱坑的第二条通道。
+// 结果出现在 /var/mobile/Library/Preferences/com.zone.aodbright.plist，Filza 直接可读。
+static void prefsBreadcrumb(const char *prog, int pid) {
+    CFStringRef key = CFSTR("loadedAt");
+    CFStringRef s = CFStringCreateWithFormat(NULL, NULL,
+                        CFSTR("AODBright v0.1.1 pid=%d prog=%s"), pid, prog);
+    CFPreferencesSetAppValue(key, s, CFSTR("com.zone.aodbright"));
+    CFPreferencesSetAppValue(CFSTR("loadedBy"),
+        CFStringCreateWithCString(NULL, prog, kCFStringEncodingUTF8),
+        CFSTR("com.zone.aodbright"));
+    CFPreferencesAppSynchronize(CFSTR("com.zone.aodbright"));
+    CFRelease(s);
+}
+
+// 通道 C：震动信标。完全不依赖文件系统，也不依赖 ObjC —— 只要加载了就能感觉到。
+//   震 1 下 = 已在 SpringBoard 里加载（找到了 SBBacklightController）
+//   震 2 下 = 加载了但不在 SpringBoard（只会在设置 App 里出现）
+static void *buzzThread(void *arg) {
+    int times = (int)(long)arg;
+    for (int i = 0; i < times; i++) {
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        usleep(400000);
+    }
+    return NULL;
+}
+
+static void buzz(int times) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, buzzThread, (void *)(long)times) == 0)
+        pthread_detach(t);
+}
+
 static void blog(NSString *fmt, ...) {
     if (gLogCount > 400) return;
     gLogCount++;
@@ -63,14 +124,8 @@ static void blog(NSString *fmt, ...) {
     NSString *line = [s stringByAppendingString:@"\n"];
     const char *p = line.UTF8String;
     size_t n = strlen(p);
-    const char *paths[] = {
-        "/var/mobile/Library/Preferences/aodbright.log",
-        "/var/jb/aodbright.log",
-        "/tmp/aodbright.log",
-        NULL
-    };
-    for (int i = 0; paths[i]; i++) {
-        int fd = open(paths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
+    for (int i = 0; kLogPaths[i]; i++) {
+        int fd = open(kLogPaths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
         if (fd < 0) continue;
         ssize_t w = write(fd, p, n);
         (void)w;
@@ -285,9 +340,30 @@ static void parseAnimEncoding(const char *e, char *a, char *b) {
 }
 
 __attribute__((constructor)) static void AODBrightInit(void) {
-    blog(@"=== AODBright 已加载 pid=%d ===", (int)getpid());
+    // 第一条：纯 C 面包屑，先于任何 ObjC。它落盘就证明 dylib 被 dyld 加载了。
+    rawBreadcrumb("=== AODBright v0.1.1 构造函数已执行 ===");
+
+    int pid = (int)getpid();
+    const char *prog = getprogname();
 
     Class cls = objc_getClass("SBBacklightController");
+
+    // 通道 C：震动信标。1 下 = 在 SpringBoard 里，2 下 = 在别的进程（设置 App）。
+    buzz(cls ? 1 : 2);
+
+    // 通道 B：CFPreferences 面包屑（不受沙箱限制的那条）。
+    prefsBreadcrumb(prog, pid);
+
+    blog(@"=== AODBright v0.1.1 已加载 pid=%d prog=%s ===", pid, prog);
+    blog(@"探针：SBBacklightController=%s  LastLookManager=%s（后者有=LastLook 也在跑，会互相干扰）",
+         cls ? "有" : "无",
+         objc_getClass("LastLookManager") ? "有" : "无");
+    blog(@"access(W_OK): logs=%d jb根=%d prefs=%d tmp=%d",
+         access("/var/jb/aodbright_logs", W_OK),
+         access("/var/jb", W_OK),
+         access("/var/mobile/Library/Preferences", W_OK),
+         access("/tmp", W_OK));
+
     if (!cls) {
         blog(@"本进程没有 SBBacklightController（不是 SpringBoard？），不做事");
         return;
