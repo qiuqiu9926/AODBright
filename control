@@ -1,6 +1,6 @@
 Package: com.zone.aodbright
 Name: AODBright
-Version: 0.1.0
+Version: 0.1.1
 Architecture: iphoneos-arm64
 Description: 锁屏后不立即熄屏：背光压到 15% 保持 10 秒，再完全熄灭
 Maintainer: zone
