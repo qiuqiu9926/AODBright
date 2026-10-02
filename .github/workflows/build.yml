@@ -24,7 +24,9 @@ jobs:
           echo "$THEOS/bin" >> "$GITHUB_PATH"
 
       - name: 编译打包
-        run: make package FINALPACKAGE=1
+        run: |
+          chmod +x layout/DEBIAN/postinst
+          make package FINALPACKAGE=1
 
       - name: 收集产物
         run: |
