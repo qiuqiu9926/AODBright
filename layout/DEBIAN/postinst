@@ -1,0 +1,11 @@
+#!/bin/sh
+# AODBright：以 root 身份把日志目录建好。
+# SpringBoard 以 mobile 身份运行，既没有权限在 /var/jb 根目录创建文件，
+# 其沙箱也不放行 /tmp 与 /var/mobile/Library/Preferences —— 这三个路径
+# 已在 AODDim 项目里逐个实测过写不进去。唯一可行的办法是安装时用 root
+# 预先建好目录并放开权限，运行期直接往里面追加。
+mkdir -p /var/jb/aodbright_logs
+chmod 0777 /var/jb/aodbright_logs
+touch /var/jb/aodbright_logs/aodbright.log
+chmod 0666 /var/jb/aodbright_logs/aodbright.log
+exit 0
