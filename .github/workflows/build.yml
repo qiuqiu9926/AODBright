@@ -30,11 +30,15 @@ jobs:
 
       - name: 收集产物
         run: |
-          mkdir -p out
+          mkdir -p out/manual/DynamicLibraries
           cp packages/*.deb out/ 2>/dev/null || true
           find .theos/obj -name '*.dylib' -exec cp {} out/ \; 2>/dev/null || true
           cp AODBright.plist out/ 2>/dev/null || true
-          ls -l out
+          # .theos/obj 里的是签名前的中间产物；deb 里的才是 ldid 签过名的。
+          # 从 deb 里抽一份出来，供手工安装（免去再签一次也不会拿错）。
+          dpkg-deb -x packages/*.deb out_deb/ 2>/dev/null || true
+          cp out_deb/var/jb/Library/MobileSubstrate/DynamicLibraries/* out/manual/DynamicLibraries/ 2>/dev/null || true
+          ls -l out/ out/manual/DynamicLibraries/
 
       - uses: actions/upload-artifact@v4
         with:
