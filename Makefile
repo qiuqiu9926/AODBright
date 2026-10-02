@@ -9,6 +9,6 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = AODBright
 AODBright_FILES = AODBright.m
 AODBright_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-AODBright_FRAMEWORKS = UIKit Foundation
+AODBright_FRAMEWORKS = UIKit Foundation AudioToolbox
 
 include $(THEOS_MAKE_PATH)/tweak.mk
